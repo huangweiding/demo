@@ -11,20 +11,42 @@ class RMSNorm(torch.nn.Module):
         rms_norm = torch.rsqrt(x.pow(2).mean(-1, keepdim=True)+self.eps)
         return x*rms_norm*self.weights
 
+def apply_sliding_attention_mask(hidden_size, num_heads, sliding_window, mask=None):
+    
+
+
 class SlidingWindowLayer(torch.nn.Module):
-    def __init__(self, hidden_size, num_heads, sliding_window):
+    def __init__(self, hidden_size, num_heads, sliding_window, mask=None):
+        assert hidden_size % num_heads != 0
         super().__init__()
         self.hidden_size = hidden_size
         self.num_heads = num_heads
         self.sliding_window = sliding_window
+        self.mask = mask
+
+        self.q_proj = torch.Linear(hidden_size, hidden_size)
+        self.k_proj = torch.Linear(hidden_size, hidden_size)
+        self.v_proj = torch.Linear(hidden_size, hidden_size)
+        self.o_proj = torch.Linear(hidden_size, hidden_size)
+
+        self.q_norm = RMSNorm(hidden_size)
+        self.k_norm = RMSNorm(hidden_size)
+
+
+
 
     def forward(self, inputs, attention_mask=None):
-        # Placeholder implementation for sliding window attention
-        # This is a basic implementation - you can expand it based on your needs
-        batch_size, seq_length, hidden_size = inputs.shape
         
-        # For now, just return the inputs as-is
-        # In a real implementation, you would implement the sliding window attention mechanism
+        batch_size, seq_length, hidden_size = inputs.shape
+
+        Q = self.q_proj(inputs).view(batch_size, seq_length, self.num_heads, self.hidden_size//self.num_heads).transpose(1, 2)
+        K = self.k_proj(inputs).view(batch_size, seq_length, self.num_heads, self.hidden_size//self.num_heads).transpose(1, 2)
+        V = self.v_proj(inputs).view(batch_size, seq_length, self.num_heads, self.hidden_size//self.num_heads).transpose(1, 2)
+
+
+
+
+        
         return inputs
 
 class MyModel(torch.nn.Module):
