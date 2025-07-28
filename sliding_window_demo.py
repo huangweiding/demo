@@ -1,4 +1,6 @@
 import torch
+import math
+
 class RMSNorm(torch.nn.Module):
     def __init__(self, hidden_size, eps=1e-6):
         super().__init__()
@@ -11,23 +13,68 @@ class RMSNorm(torch.nn.Module):
         rms_norm = torch.rsqrt(x.pow(2).mean(-1, keepdim=True)+self.eps)
         return x*rms_norm*self.weights
 
-def apply_sliding_attention_mask(hidden_size, num_heads, sliding_window, mask=None):
+def create_attention_mask(seq_length, sliding_window):
+    if sliding_window is None:
+        causal_mask = torch.triu(torch.ones((seq_length, seq_length)), diagonal=1).bool()
+        attention_mask = ~causal_mask
+    else:
+        # sliding window is not None
+        causal_mask = torch.triu(torch.ones((seq_length, seq_length)), diagonal=1).bool()
+        sliding_window_matrix = torch.zeros((seq_length, seq_length), dtype=torch.bool)
+        for i in range(seq_length):
+            start_idx = max(0, i-sliding_window+1)
+            sliding_window_matrix[i, start_idx:i+1] = True
+
+        attention_mask = ~causal_mask & sliding_window_matrix
+    return attention_mask
+        
+
+
+
+def apply_sliding_window_attention(Q, K, V, sliding_window, mask=None):
+
+    batch_size, num_heads, seq_length, head_dim = Q.shape
+
+    attention_weights = torch.matmul(Q, K.transpose(2, 3))/math.sqrt(head_dim)
+    if sliding_window is None:
+        # full attention
+        attention_mask = create_attention_mask(seq_length, sliding_window)
+        attention_mask = attention_mask.unsqueeze(0).unsqueeze(0).expand(batch_size, num_heads, -1, -1)
+    elif mask is None:
+        # sliding window attention
+        attention_mask = create_attention_mask(seq_length, sliding_window)
+        attention_mask = attention_mask.unsqueeze(0).unsqueeze(0).expand(batch_size, num_heads, -1, -1)
+    else:
+        attention_mask = mask
+
+    attention_weights = attention_weights.masked_fill(~attention_mask, value=float('-inf'))
+
+    attention_weights = torch.nn.functional.softmax(attention_weights, dim=-1)
+
+    # attention_weights [batch_size, num_heads, seq_length, seq_length]
+    # v [batch_size, num_heads, seq_length, head_dim]
+    # result [batch_size, num_heads, seq_length, head_dim]
+
+    output = torch.matmul(attention_weights, V)
+
+    return output, attention_weights
+
     
 
 
 class SlidingWindowLayer(torch.nn.Module):
     def __init__(self, hidden_size, num_heads, sliding_window, mask=None):
-        assert hidden_size % num_heads != 0
+        assert hidden_size % num_heads == 0
         super().__init__()
         self.hidden_size = hidden_size
         self.num_heads = num_heads
         self.sliding_window = sliding_window
         self.mask = mask
 
-        self.q_proj = torch.Linear(hidden_size, hidden_size)
-        self.k_proj = torch.Linear(hidden_size, hidden_size)
-        self.v_proj = torch.Linear(hidden_size, hidden_size)
-        self.o_proj = torch.Linear(hidden_size, hidden_size)
+        self.q_proj = torch.nn.Linear(hidden_size, hidden_size)
+        self.k_proj = torch.nn.Linear(hidden_size, hidden_size)
+        self.v_proj = torch.nn.Linear(hidden_size, hidden_size)
+        self.o_proj = torch.nn.Linear(hidden_size, hidden_size)
 
         self.q_norm = RMSNorm(hidden_size)
         self.k_norm = RMSNorm(hidden_size)
@@ -43,11 +90,15 @@ class SlidingWindowLayer(torch.nn.Module):
         K = self.k_proj(inputs).view(batch_size, seq_length, self.num_heads, self.hidden_size//self.num_heads).transpose(1, 2)
         V = self.v_proj(inputs).view(batch_size, seq_length, self.num_heads, self.hidden_size//self.num_heads).transpose(1, 2)
 
+        output, attention_weights = apply_sliding_window_attention(Q, K, V, self.sliding_window, mask=attention_mask)
 
 
+        output = output.transpose(1, 2).contiguous().view(batch_size, seq_length, -1)
 
-        
-        return inputs
+        output = self.o_proj(output)
+
+        return output, attention_weights
+
 
 class MyModel(torch.nn.Module):
     def __init__(self, vocab_size, hidden_size, num_heads, num_layers, sliding_window, max_num_layer):
@@ -78,12 +129,42 @@ class MyModel(torch.nn.Module):
             self.layers.append(attention_layer)
 
         self.norm = RMSNorm(hidden_size)
-        self.lm_head = torch.nn.Linear(hidden_size, hidden_size, bias=False)
+        self.lm_head = torch.nn.Linear(hidden_size, vocab_size, bias=False)
+
+    def forward(self, x, attention_mask=None):
+
+        input_embedding = self.embedding_layer(x)
+        hidden_states = input_embedding
+        for i in range(len(self.layers)):
+            hidden_states, _ = self.layers[i](hidden_states)
+
+        hidden_states = self.norm(hidden_states)
+        logits = self.lm_head(hidden_states)
+        return logits
 
 if __name__ == "__main__":
-    import torch
-    hidden_size = 2
-    test = RMSNorm(hidden_size)
-    x = torch.rand((2, hidden_size))
-    print(test(x))
-    print("this is a test")
+    vocab_size = 1000
+    hidden_size = 512
+    num_layers = 6
+    num_heads = 8
+    sliding_window = 4
+    max_window_layers = 3  # 前3层使用全注意力，后3层使用滑动窗口注意力
+    
+    # 创建模型
+    model = MyModel(
+        vocab_size, hidden_size, num_heads, num_layers, sliding_window, max_window_layers
+    )
+    
+    # 创建输入
+    batch_size = 2
+    seq_len = 8
+    input_ids = torch.randint(0, vocab_size, (batch_size, seq_len))
+    
+    print(f"输入形状: {input_ids.shape}")
+    print(f"滑动窗口大小: {sliding_window}")
+    print(f"最大窗口层数: {max_window_layers}\n")
+    
+    # 前向传播
+    with torch.no_grad():
+        logits = model(input_ids)
+    print(logits)
