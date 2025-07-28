@@ -86,3 +86,4 @@ if __name__ == "__main__":
     test = RMSNorm(hidden_size)
     x = torch.rand((2, hidden_size))
     print(test(x))
+    print("this is a test")
