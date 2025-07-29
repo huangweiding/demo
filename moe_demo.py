@@ -57,9 +57,13 @@ class SimpleMoeBlock(torch.nn.Module):
             if y_list.numel() > 0:
                 #如果 y_list有非0值, 如果没有非0值，y_list会是空list []
                 selected_hidden_states = hidden_states[None, y_list].view(-1, hidden_size)
-                current_hidden_states = expert_layer(selected_hidden_states) * router_weights[y_list, x_list]
+                current_hidden_states = expert_layer(selected_hidden_states) * router_weights[y_list, x_list, None]
                 #hidden_states 现在是二维的[bs*seq_length, hidden_size], 
                 # router_weights 也是一个二维矩阵[bs*seq_length, num_expert_per_topk], 所以需要反过来指定位置 y_list 是bs*seq_length的维度， x_list是指选中的是第一个还是第二个expert
+                final_hidden_states.index_add_(0, y_list, current_hidden_states)
+
+        final_hidden_states = final_hidden_states.view(batch_size, seq_length, hidden_size)
+        return final_hidden_states
 
 if __name__ == "__main__":
     import torch
@@ -69,7 +73,8 @@ if __name__ == "__main__":
     moe_intermediate_size = 1024
     test = SimpleMoeBlock(hidden_size=hidden_size, num_expert_per_topk=num_expert_per_topk, num_experts=8, moe_intermediate_size=moe_intermediate_size)
     inputs = torch.rand((2, 8, 256))
-    test(inputs)
+    a = test(inputs)
+    print(a)
 
 
 

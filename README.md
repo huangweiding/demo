@@ -1,4 +1,5 @@
 # Sliding Window Attention Demo
+https://zhuanlan.zhihu.com/p/677607581
 
 This repository contains a PyTorch implementation of a sliding window attention mechanism with RMSNorm, demonstrating how to build a transformer model that uses different attention patterns for different layers.
 
