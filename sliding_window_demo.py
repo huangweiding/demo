@@ -31,7 +31,7 @@ def create_attention_mask(seq_length, sliding_window):
 
 
 
-def apply_sliding_window_attention(Q, K, V, sliding_window, mask=None):
+def apply_sliding_window_attention(Q, K, V, sliding_window, mask=None, padding_mask=None):
 
     batch_size, num_heads, seq_length, head_dim = Q.shape
 
@@ -46,6 +46,16 @@ def apply_sliding_window_attention(Q, K, V, sliding_window, mask=None):
         attention_mask = attention_mask.unsqueeze(0).unsqueeze(0).expand(batch_size, num_heads, -1, -1)
     else:
         attention_mask = mask
+
+    if padding_mask is not None and sliding_window:
+        # padding mask [BS, seq_length]
+        padding_mask = padding_mask.unsqueeze(1).unsqueeze(2)
+        # [BS, 1, 1, seq_length]
+        transpose_padding_mask = padding_mask.transpose(-2, -1)
+        #[BS, 1, seq_length, 1]
+        final_padding_mask = padding_mask & transpose_padding_mask
+
+        attention_mask = final_padding_mask & attention_mask
 
     attention_weights = attention_weights.masked_fill(~attention_mask, value=float('-inf'))
 
@@ -90,7 +100,7 @@ class SlidingWindowLayer(torch.nn.Module):
         K = self.k_proj(inputs).view(batch_size, seq_length, self.num_heads, self.hidden_size//self.num_heads).transpose(1, 2)
         V = self.v_proj(inputs).view(batch_size, seq_length, self.num_heads, self.hidden_size//self.num_heads).transpose(1, 2)
 
-        output, attention_weights = apply_sliding_window_attention(Q, K, V, self.sliding_window, mask=attention_mask)
+        output, attention_weights = apply_sliding_window_attention(Q, K, V, self.sliding_window, padding_mask=attention_mask)
 
 
         output = output.transpose(1, 2).contiguous().view(batch_size, seq_length, -1)
@@ -136,7 +146,7 @@ class MyModel(torch.nn.Module):
         input_embedding = self.embedding_layer(x)
         hidden_states = input_embedding
         for i in range(len(self.layers)):
-            hidden_states, _ = self.layers[i](hidden_states)
+            hidden_states, _ = self.layers[i](hidden_states, attention_mask=attention_mask)
 
         hidden_states = self.norm(hidden_states)
         logits = self.lm_head(hidden_states)
@@ -159,6 +169,12 @@ if __name__ == "__main__":
     batch_size = 2
     seq_len = 8
     input_ids = torch.randint(0, vocab_size, (batch_size, seq_len))
+
+    input_mask = input_ids.clone()
+
+    input_mask[0, -1:] = 0
+    input_mask[1, -2:] = 0
+    input_mask = torch.greater(input_mask, 0)
     
     print(f"输入形状: {input_ids.shape}")
     print(f"滑动窗口大小: {sliding_window}")
@@ -166,5 +182,5 @@ if __name__ == "__main__":
     
     # 前向传播
     with torch.no_grad():
-        logits = model(input_ids)
+        logits = model(input_ids, attention_mask=input_mask)
     print(logits)
