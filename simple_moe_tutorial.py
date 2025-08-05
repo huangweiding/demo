@@ -211,8 +211,14 @@ def create_causal_mask(seq_len, device):
     return mask.unsqueeze(0).unsqueeze(0)  # [1, 1, seq_len, seq_len]
 
 
-def load_balancing_loss(router_logits, num_experts, num_experts_per_tok):
-    """计算负载均衡损失"""
+def load_balancing_loss(router_logits, num_experts, num_experts_per_tok, attention_mask=None):
+    """
+    计算负载均衡损失
+    Args:
+        router_logits: [num_layers, BS*seq_len, num_experts]
+        attention_mask: [batch_size, seq_len] 或 None，用于识别有效token
+
+    """
     if not router_logits:
         return 0.0
     
@@ -227,8 +233,19 @@ def load_balancing_loss(router_logits, num_experts, num_experts_per_tok):
         
         # 统计专家使用情况
         expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=num_experts)
-        expert_usage += expert_mask.sum(dim=(0, 1))  # 跨batch和top-k维度求和
-        total_tokens += logits.shape[0]
+        # expert_mask [bs*seq_length, num_experts_per_tok, num_experts]
+
+        # 如果有attention_mask，只计算有效token
+        if attention_mask is not None:
+            # attention_mask: [batch_size, seq_len] -> [batch_size * seq_len]
+            valid_mask = attention_mask.view(-1).bool()
+            # 只对有效token统计专家使用情况
+            expert_usage += expert_mask[valid_mask].sum(dim=(0, 1))
+            total_tokens += valid_mask.sum().item()
+        else:
+            # 没有mask时，使用所有token
+            expert_usage += expert_mask.sum(dim=(0, 1))
+            total_tokens += logits.shape[0]
     
     # 计算理想均匀分布
     ideal_usage = total_tokens * num_experts_per_tok / num_experts
@@ -257,13 +274,24 @@ def demo_moe():
         num_experts, num_experts_per_tok, moe_intermediate_size, norm_topk_prob
     )
     
-    # 创建输入
+    # 创建输入（模拟有padding的情况）
     batch_size = 2
     seq_len = 10
     input_ids = torch.randint(0, vocab_size, (batch_size, seq_len))
     
-    # 创建因果掩码
-    attention_mask = create_causal_mask(seq_len, input_ids.device)
+    # 创建padding掩码（模拟不同长度的序列）
+    # 第一个序列：有效长度8，后面2个是padding
+    # 第二个序列：有效长度6，后面4个是padding
+    attention_mask = torch.ones(batch_size, seq_len, dtype=torch.bool)
+    attention_mask[0, 8:] = False  # 第一个序列的padding
+    attention_mask[1, 6:] = False  # 第二个序列的padding
+    
+    print(f"Attention mask (True=有效token, False=padding):")
+    for i in range(batch_size):
+        print(f"  序列{i}: {attention_mask[i].tolist()}")
+    
+    # 创建因果掩码（用于注意力计算）
+    causal_mask = create_causal_mask(seq_len, input_ids.device)
     
     print("=== 基于Qwen3架构的MoE模型演示 ===")
     print(f"模型参数:")
@@ -279,13 +307,13 @@ def demo_moe():
     # 前向传播
     model.eval()
     with torch.no_grad():
-        logits, router_logits = model(input_ids, attention_mask)
+        logits, router_logits = model(input_ids, causal_mask)
     
     print(f"\n输出形状: {logits.shape}")
     print(f"路由器logits数量: {len(router_logits)}")
     
     # 计算负载均衡损失
-    aux_loss = load_balancing_loss(router_logits, num_experts, num_experts_per_tok)
+    aux_loss = load_balancing_loss(router_logits, num_experts, num_experts_per_tok, attention_mask)
     print(f"负载均衡损失: {aux_loss.item():.6f}")
     
     # 分析专家使用情况
@@ -293,15 +321,20 @@ def demo_moe():
     expert_usage = torch.zeros(num_experts)
     total_tokens = 0
     
+    # 创建有效token掩码（用于演示，实际应该从attention_mask获取）
+    valid_mask = torch.ones(batch_size * seq_len, dtype=torch.bool)
+    
     for logits in router_logits:
         routing_weights = F.softmax(logits, dim=1)
         _, selected_experts = torch.topk(routing_weights, num_experts_per_tok, dim=-1)
         expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=num_experts)
-        expert_usage += expert_mask.sum(dim=(0, 1))
-        total_tokens += logits.shape[0]
+        
+        # 只统计有效token
+        expert_usage += expert_mask[valid_mask].sum(dim=(0, 1))
+        total_tokens += valid_mask.sum().item()
     
     ideal_usage = total_tokens * num_experts_per_tok / num_experts
-    print(f"总token数: {total_tokens}")
+    print(f"有效token数: {total_tokens}")
     print(f"理想均匀分布: {ideal_usage:.2f}")
     print(f"各专家使用次数:")
     for i, usage in enumerate(expert_usage):

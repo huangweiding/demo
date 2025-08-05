@@ -54,10 +54,23 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     Returns:
         `tuple(torch.Tensor)` comprising of the query and key tensors rotated using the Rotary Position Embedding.
     """
-    cos = cos.unsqueeze(unsqueeze_dim)
-    sin = sin.unsqueeze(unsqueeze_dim)
-    q_embed = (q * cos) + (rotate_half(q) * sin)
-    k_embed = (k * cos) + (rotate_half(k) * sin)
+    # cos and sin have shape [batch, heads, seq_len, head_dim//2]
+    # q and k have shape [batch, heads, seq_len, head_dim]
+    # We need to apply rotary embedding only to the first half of the head dimension
+    
+    # Get the first half of q and k for rotary embedding
+    q_half = q[..., :cos.shape[-1]]
+    # q_half size is [batch, heads, seq_len, head_dim//2]
+    k_half = k[..., :cos.shape[-1]]
+    
+    # Apply rotary embedding to the first half
+    q_rotated = (q_half * cos) + (rotate_half(q_half) * sin)
+    k_rotated = (k_half * cos) + (rotate_half(k_half) * sin)
+    
+    # Concatenate with the second half (unchanged)
+    q_embed = torch.cat([q_rotated, q[..., cos.shape[-1]:]], dim=-1)
+    k_embed = torch.cat([k_rotated, k[..., cos.shape[-1]:]], dim=-1)
+    
     return q_embed, k_embed
 
 
@@ -103,8 +116,12 @@ def eager_gqa_attention_forward(
     attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
     
     if attention_mask is not None:
-        causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
-        attn_weights = attn_weights + causal_mask
+        # Convert boolean mask to float mask for attention
+        if attention_mask.dtype == torch.bool:
+            attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
+            attention_mask = attention_mask.to(dtype=query.dtype)
+            attention_mask = (1.0 - attention_mask) * torch.finfo(query.dtype).min
+        attn_weights = attn_weights + attention_mask
 
     # Apply softmax and dropout
     attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
@@ -224,7 +241,7 @@ class GroupedQueryAttention(nn.Module):
         past_key_value: Optional[torch.Tensor] = None,
         cache_position: Optional[torch.LongTensor] = None,
         **kwargs,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
         """
         Forward pass for Grouped-Query Attention.
         
@@ -236,7 +253,7 @@ class GroupedQueryAttention(nn.Module):
             cache_position: Optional cache position for static cache
             
         Returns:
-            tuple: (attention_output, attention_weights)
+            torch.Tensor: attention_output
         """
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
@@ -249,8 +266,24 @@ class GroupedQueryAttention(nn.Module):
         # Apply rotary position embedding if provided
         if position_embeddings is not None:
             cos, sin = position_embeddings
-            # Skip rotary embedding for now to avoid dimension issues
-            # query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+            # Apply rotary position embedding to query and key states
+            # Note: cos and sin have shape [1, 1, seq_len, head_dim//2]
+            # We need to expand them to match the attention heads and key/value heads
+            batch_size, num_heads, seq_len, head_dim = query_states.shape
+            _, num_kv_heads, _, _ = key_states.shape
+            
+            # Expand cos and sin for query states
+            # original cos size is [1, 1, seq_len, head_dim//2] -> [batch_size, num_heads, seq_len, head_dim//2]
+            cos_q = cos.expand(batch_size, num_heads, -1, -1)
+            sin_q = sin.expand(batch_size, num_heads, -1, -1)
+            
+            # Expand cos and sin for key states
+            cos_k = cos.expand(batch_size, num_kv_heads, -1, -1)
+            sin_k = sin.expand(batch_size, num_kv_heads, -1, -1)
+            
+            # Apply rotary position embedding separately
+            query_states, _ = apply_rotary_pos_emb(query_states, query_states, cos_q, sin_q)
+            _, key_states = apply_rotary_pos_emb(key_states, key_states, cos_k, sin_k)
 
         # Handle past key/value for autoregressive generation
         if past_key_value is not None:
@@ -275,7 +308,7 @@ class GroupedQueryAttention(nn.Module):
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.o_proj(attn_output)
         
-        return attn_output, attn_weights
+        return attn_output
 
 
 class GroupedQueryRotaryEmbedding(nn.Module):
@@ -303,15 +336,17 @@ class GroupedQueryRotaryEmbedding(nn.Module):
         seq_len = position_ids.shape[-1]
         t = torch.arange(seq_len, device=position_ids.device, dtype=torch.float32)
         
-        # Generate position embeddings
-        freqs = torch.outer(t, 1.0 / (self.rope_theta ** (torch.arange(0, self.config.head_dim, 2, device=x.device) / self.config.head_dim)))
+        # Generate position embeddings for half the head dimension
+        dim = self.config.head_dim // 2
+        freqs = torch.outer(t, 1.0 / (self.rope_theta ** (torch.arange(0, dim, device=x.device) / dim)))
         
         cos = torch.cos(freqs)
         sin = torch.sin(freqs)
         
         # Expand to match the expected shape for broadcasting
-        cos = cos.unsqueeze(0).unsqueeze(0)  # [1, 1, seq_len, head_dim//2]
-        sin = sin.unsqueeze(0).unsqueeze(0)  # [1, 1, seq_len, head_dim//2]
+        # Shape: [1, 1, seq_len, head_dim//2]
+        cos = cos.unsqueeze(0).unsqueeze(0)
+        sin = sin.unsqueeze(0).unsqueeze(0)
         
         return cos, sin
 
@@ -352,4 +387,77 @@ def create_gqa_config(
     )
 
 
- 
+if __name__ == "__main__":
+    # Example: Demonstrate how to use GroupedQueryAttention (GQA, also called RQA in some contexts)
+
+    import torch
+
+    def demo_gqa_usage():
+        print("=== GQA (Grouped-Query Attention) Demo ===")
+        
+        # Create a GQA config
+        config = create_gqa_config(
+            attention_type="gqa",
+            num_attention_heads=16,
+            num_key_value_heads=4,
+            hidden_size=512,
+        )
+
+        print(f"Config: {config.num_attention_heads} attention heads, {config.num_key_value_heads} key/value heads")
+        print(f"Key-value groups: {config.num_attention_heads // config.num_key_value_heads}")
+
+        # Instantiate the GroupedQueryAttention module
+        gqa = GroupedQueryAttention(config)
+
+        # Dummy input: batch_size=2, seq_len=10, hidden_size=512
+        x = torch.randn(2, 10, config.hidden_size)
+        print(f"Input shape: {x.shape}")
+
+        # Optional: attention mask (e.g., for padding)
+        attention_mask = torch.ones(2, 10, dtype=torch.bool)
+        print(f"Attention mask shape: {attention_mask.shape}")
+
+        # Generate rotary position embeddings
+        position_ids = torch.arange(10, dtype=torch.long).unsqueeze(0).expand(2, -1)
+        rope = GroupedQueryRotaryEmbedding(config)
+        cos, sin = rope(x, position_ids)
+        print(f"Rotary embeddings generated: cos shape {cos.shape}, sin shape {sin.shape}")
+
+        # Forward pass with rotary position embeddings
+        output = gqa(x, position_embeddings=(cos, sin), attention_mask=attention_mask)
+        print(f"Output shape: {output.shape}")
+        
+        # Verify the output shape matches input
+        assert output.shape == x.shape, f"Output shape {output.shape} doesn't match input shape {x.shape}"
+        print("✅ GQA forward pass with rotary position embeddings successful!")
+
+    def demo_different_attention_types():
+        print("\n=== Different Attention Types Demo ===")
+        
+        # Test different attention configurations
+        attention_configs = [
+            ("MHA (Multi-Head Attention)", "mha", 8, 8),
+            ("MQA (Multi-Query Attention)", "mqa", 8, 1),
+            ("GQA (Grouped-Query Attention)", "gqa", 8, 4),
+        ]
+        
+        for name, attn_type, num_heads, num_kv_heads in attention_configs:
+            print(f"\n{name}:")
+            config = create_gqa_config(
+                attention_type=attn_type,
+                num_attention_heads=num_heads,
+                num_key_value_heads=num_kv_heads,
+                hidden_size=256,
+            )
+            
+            gqa = GroupedQueryAttention(config)
+            x = torch.randn(1, 5, config.hidden_size)
+            output = gqa(x)
+            
+            print(f"  Config: {config.num_attention_heads} heads, {config.num_key_value_heads} KV heads")
+            print(f"  Input: {x.shape} -> Output: {output.shape}")
+            print(f"  KV groups: {config.num_attention_heads // config.num_key_value_heads}")
+
+    # Run demos
+    demo_gqa_usage()
+    demo_different_attention_types()
