@@ -61,7 +61,7 @@ class SimpleMoEBlock(nn.Module):
     def forward(self, hidden_states):
         batch_size, sequence_length, hidden_dim = hidden_states.shape
         
-        # 重塑为 [batch*seq_len, hidden_dim]
+        # 重塑为 [batch*seq_len, hidden_dim] = [token_size, hidden_size]
         hidden_states = hidden_states.view(-1, hidden_dim)
         
         # 1. 计算路由logits
@@ -69,6 +69,7 @@ class SimpleMoEBlock(nn.Module):
         
         # 2. 应用softmax并选择top-k专家
         routing_weights = F.softmax(router_logits, dim=1, dtype=torch.float)
+        # selected_experts [token_size, 2] 2 is experts chosen
         routing_weights, selected_experts = torch.topk(routing_weights, self.num_experts_per_tok, dim=-1)
         
         # 3. 可选的topk概率归一化（Qwen3特性）
@@ -87,13 +88,13 @@ class SimpleMoEBlock(nn.Module):
         
         # 6. 创建专家掩码（与Qwen3一致）
         expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
-        # [batch_size, chosen_experts, num_experts] -> [num_experts, chosen_experts, batch_size]
+        # [token_size, chosen_experts, num_experts] -> [token_size, chosen_experts, batch_size]
         
         # 7. 计算每个专家的输出
         expert_hitted = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
         for expert_idx in expert_hitted:
             expert_layer = self.experts[expert_idx]
-            idx, top_x = torch.where(expert_mask[expert_idx].squeeze(0))
+            idx, top_x = torch.where(expert_mask[expert_idx].squeeze(0)) # idx is [x] top_x is [y]
             
             if top_x.numel() > 0:
                 # 获取对应的输入和权重
@@ -156,6 +157,7 @@ class SimpleMoELayer(nn.Module):
         
         # 应用注意力权重
         attn_output = torch.matmul(attention_weights, v)
+        # atten_output before transpose is [bs, num_heads, seq_length, head_dim]
         attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, seq_len, hidden_dim)
         attn_output = self.o_proj(attn_output)
         

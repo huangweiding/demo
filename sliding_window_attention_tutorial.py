@@ -31,7 +31,7 @@ def create_sliding_window_mask(seq_len, sliding_window, device, attention_mask=N
         
         # 创建padding mask：padding位置为False，非padding位置为True
         padding_mask = attention_mask.unsqueeze(1).unsqueeze(2)  # [batch_size, 1, 1, seq_len]
-        padding_mask = padding_mask & padding_mask.transpose(-2, -1)  # [batch_size, 1, seq_len, seq_len]
+        padding_mask = padding_mask & padding_mask.transpose(-2, -1)  # [batch_size, 1, seq_len, 1]
         
         # 将final_mask扩展到batch维度
         final_mask = final_mask.unsqueeze(0).unsqueeze(0).expand(batch_size, 1, -1, -1)
