@@ -51,7 +51,7 @@ class Model():
 
         return a_gradient, b_gradient, c_gradient
 
-def generate_data(a=2, b=1.5, c=1):
+def generate_data(a=4, b=1.7, c=1):
     y_list = []
     x_list = []
     x_list = np.linspace(0, 10, num=100)
@@ -71,7 +71,7 @@ def main():
     model = Model()
     batch_size = 4
 
-    for epoch in range(1000):
+    for epoch in range(5000):
         for i in range(0, len(x_list), batch_size):
             print("iteration")
             print(i)
