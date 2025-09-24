@@ -71,9 +71,9 @@ class SingleLayer(torch.nn.Module):
         self.C -= learning_rate * self.grad_C
         
         # 清零梯度，避免累积
-        self.grad_A.zero_(0)
-        self.grad_B.zero_(0)
-        self.grad_C.zero_(0)
+        self.grad_A.zero_()
+        self.grad_B.zero_()
+        self.grad_C.zero_()
 
 
 class MultiLayer(torch.nn.Module):
