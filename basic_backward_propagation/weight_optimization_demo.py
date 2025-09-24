@@ -52,6 +52,9 @@ class QuadraticModel:
         Returns:
             (梯度a, 梯度b, 梯度c)
         """
+
+        #因为这个只有一层，所以不需要计算反向传播的X_input, 也就是上一层的Y_output, 所以不需要更新 grad_input,
+        # 参考lora_demo看一下多层，如果需要计算反向传播的X_input的情况。
         y_pred = self.forward(x)
         error = y_pred - y_true
         
