@@ -133,6 +133,8 @@ def get_per_token_logps(model, input_ids: torch.Tensor, attention_mask: torch.Te
     # log_probs: [batch_size, seq_len, vocab_size]
     # input_ids unsqueeze(-1): [batch_size, seq_len, 1]
     per_token_logps = torch.gather(log_probs, -1, input_ids.unsqueeze(-1)).squeeze(-1)
+
+    # 结果是 [batch_size, seq_len]
     
     return per_token_logps
 
@@ -181,26 +183,31 @@ def compute_advantages(rewards: torch.Tensor, num_generations: int,
         advantages: 优势张量 [batch_size]
     """
     # 将奖励重塑为 [num_prompts, num_generations, num_reward_funcs]
+    # rewards中包含有同一个prompt的多个生成结果，所以需要先重塑为 [num_prompts, num_generations, num_reward_funcs]
     num_prompts = rewards.size(0) // num_generations
     rewards_reshaped = rewards.view(num_prompts, num_generations, -1)
     
     # 计算每个prompt组内的均值和标准差
+    # original reward shape: [batch_size*num_generations, num_reward_funcs]
     mean_rewards = rewards_reshaped.mean(dim=1)  # [num_prompts, num_reward_funcs]
     std_rewards = rewards_reshaped.std(dim=1)    # [num_prompts, num_reward_funcs]
     
     # 计算优势: (reward - mean) / std
+    # advantages shape: [batch_size*num_generations, num_reward_funcs]
     advantages = rewards - mean_rewards.repeat_interleave(num_generations, dim=0)
     
     if scale_rewards:
         # 标准化优势
         std_rewards_expanded = std_rewards.repeat_interleave(num_generations, dim=0)
         advantages = advantages / (std_rewards_expanded + 1e-4)
+    # advantages shape: [batch_size*num_generations, num_reward_funcs]
     
     # 如果有多个奖励函数，取平均
     if advantages.size(-1) > 1:
         advantages = advantages.mean(dim=-1)
     else:
         advantages = advantages.squeeze(-1)
+    # advantages shape: [batch_size*num_generations, ]
     
     return advantages
 
