@@ -70,6 +70,7 @@ class SimpleMoEBlock(nn.Module):
         # 2. 应用softmax并选择top-k专家
         routing_weights = F.softmax(router_logits, dim=1, dtype=torch.float)
         # selected_experts [token_size, 2] 2 is experts chosen
+        # breakpoint()
         routing_weights, selected_experts = torch.topk(routing_weights, self.num_experts_per_tok, dim=-1)
         
         # 3. 可选的topk概率归一化（Qwen3特性）
@@ -87,6 +88,7 @@ class SimpleMoEBlock(nn.Module):
         )
         
         # 6. 创建专家掩码（与Qwen3一致）
+        # breakpoint()
         expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
         # [token_size, chosen_experts, num_experts] -> [token_size, chosen_experts, batch_size]
         
