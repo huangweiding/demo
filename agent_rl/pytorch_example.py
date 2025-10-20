@@ -416,6 +416,7 @@ policy_net = torch.nn.Sequential(
     ),
     NormalParamExtractor(),  # this will just separate the last dimension into two outputs: a loc and a non-negative scale
 )
+# breakpoint()
 
 ######################################################################
 # **Second**: wrap the neural network in a :class:`TensorDictModule`
@@ -719,14 +720,14 @@ plt.show()
 #
 # .. code-block:: python
 #
-#    with torch.no_grad():
-#       env.rollout(
-#           max_steps=max_steps,
-#           policy=policy,
-#           callback=lambda env, _: env.render(),
-#           auto_cast_to_device=True,
-#           break_when_any_done=False,
-#       )
+with torch.no_grad():
+    env.rollout(
+        max_steps=max_steps,
+        policy=policy,
+        callback=lambda env, _: env.render(),
+        auto_cast_to_device=True,
+        break_when_any_done=False,
+    )
 #
 # If you are running this in Google Colab, you can render the trained policy by running:
 #
