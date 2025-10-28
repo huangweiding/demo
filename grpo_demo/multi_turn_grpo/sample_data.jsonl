@@ -1,0 +1,3 @@
+{"conversation": [{"role": "user", "content": "你好"}, {"role": "assistant", "content": "你好，我能帮你什么？"}, {"role": "user", "content": "帮我写一个简短的中文问候语，适合群聊开场。"}]}
+{"conversation": [{"role": "user", "content": "我们已经讨论了项目架构"}, {"role": "assistant", "content": "是的，上次确定了前后端分层"}, {"role": "user", "content": "请给我3条下一步行动建议，越具体越好。"}]}
+{"conversation": [{"role": "user", "content": "今天天气如何？"}, {"role": "assistant", "content": "北京多云"}, {"role": "user", "content": "写一段出行建议，包含衣着、交通和注意事项。"}]}
