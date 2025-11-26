@@ -13,6 +13,8 @@ class MiniConfig(PretrainedConfig):
                  num_heads: int=8,
                  max_length: int=2048,
                  eps: float=1e-6,
+                 hidden_size: int=2048,
+                 layer_num: int=8,
                  **kwargs):
         super().__init__(**kwargs)
         self.vocab_size = vocab_size
@@ -21,6 +23,8 @@ class MiniConfig(PretrainedConfig):
         self.num_heads = num_heads
         self.max_length = max_length
         self.eps = eps
+        self.hidden_size = hidden_size
+        self.layer_num = layer_num
 
 
 
@@ -60,11 +64,10 @@ class RMSNorm(torch.nn.Module):
 
 
 class Embedding(torch.nn.Module):
-    def __init__(self, vocab_size: int, embedding_size: int, max_length: int=2048, padding_idx: int=0, dropout_rate: float=0.1):
+    def __init__(self, vocab_size: int, embedding_size: int, padding_idx: int=0, dropout_rate: float=0.1):
         super().__init__()
         self.vocab_size = vocab_size
         self.embedding_size = embedding_size
-        self.max_length = max_length
         self.padding_idx = padding_idx
         self.dropout_rate = dropout_rate
         self.embedding = torch.nn.Embedding(vocab_size, embedding_size, padding_idx=padding_idx)
@@ -99,7 +102,14 @@ class Attention(torch.nn.Module):
         self.V = torch.nn.Linear(self.hidden_size, self.hidden_size, bias=False)
         self.O = torch.nn.Linear(self.hidden_size, self.hidden_size, bias=False)
 
-    def forward(self, inputs, position_embedding, attention_mask=None):
+        self.dropout = torch.nn.Dropout(config.dropout_rate)
+
+    def forward(self, 
+                inputs, 
+                position_embedding, 
+                past_key_values=None, 
+                use_cache=False,
+                attention_mask=None):
 
         cos, sin = position_embedding
         batch_size, seq_length, hidden_size = inputs.size()
@@ -110,6 +120,12 @@ class Attention(torch.nn.Module):
         v = self.V(inputs).view(batch_size, seq_length, self.num_heads, self.hidden_size//self.num_heads).transpose(2, 3)
 
         q, k = apply_rotary_positional_embedding(q, k, cos[:seq_length], sin[:seq_length])
+
+        if past_key_values is not None:
+            k = torch.cat([past_key_values[0], k], dim=1)
+            v = torch.cat([past_key_values[1], v], dim=1)
+        past_kv = (k, v) if use_cache else None
+
 
         attention_weights = torch.matmul(q, k)
 
@@ -126,8 +142,24 @@ class Attention(torch.nn.Module):
         output = output.transpose(2, 3).view(batch_size, seq_length, -1)
 
         output = self.O(output)
+        output = self.dropout(output)
 
-        return attention_weights, output
+        return output, past_kv
+
+class feedForwardBlock(torch.nn.Module):
+    def __init__(self, config: MiniConfig):
+        self.hidden_size = config.hidden_size
+        if config.intermediate_size is None:
+            intermediate_size = int(config.hidden_size * 8 / 3)
+            config.intermediate_size = 64*((intermediate_size+64-1)//64)
+        self.up_proj = torch.nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
+        self.gate_proj = torch.nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
+        self.down_proj = torch.nn.Linear(config.intermedaite_size, config.hidden_size, bias=False)
+        self.dropout = torch.nn.Dropout(config.dropout_rate)
+        self.act_fn = torch.nn.functional.silu
+
+    def forward(self, inputs):
+        return self.dropout(self.down_proj(self.act_fn(self.gate_proj(inputs))*self.up_proj(inputs)))
 
 
 class MiniBlock(torch.nn.Module):
@@ -139,18 +171,31 @@ class MiniBlock(torch.nn.Module):
 
         self.input_layernorm = RMSNorm(config.hidden_size, config.eps)
         self.post_layernorm = RMSNorm(config.hidden_size, config.eps)
+        self.mlp = feedForwardBlock(config)
 
 
-    def forward(self, inputs, position_embedding, attention_mask=None):
+    def forward(self,
+                inputs,
+                position_embedding,
+                past_key_values=None,
+                attention_mask=None,
+                use_cache=False):
         # inputs dim
         # [batch_size, seq_length, hidden_size]
+        #
+        residual = inputs
         inputs = self.input_layernorm(inputs)
 
-        attention_weights, output = self.attn(inputs, position_embedding)
-        
+        output, past_kv = self.attn(inputs,
+                                    position_embedding,
+                                    past_key_values, 
+                                    use_cache,
+                                    attention_mask=attention_mask)
 
+        hidden_states = residual + output
+        hidden_states = hidden_states + self.mlp(self.post_layernorm(hidden_states))
 
-
+        return hidden_states, past_kv
 
 class miniModel(torch.nn.Module):
     def __init__(self, config: MiniConfig):
@@ -161,7 +206,10 @@ class miniModel(torch.nn.Module):
         self.layer_norm = RMSNorm(config.hidden_size, eps=config.eps)
         self.layer_num = config.layer_num
 
+
+        self.embedding_layer = Embedding(config.vocab_size, config.embedding_size)
         self.miniBlocks = torch.nn.ModuleList([MiniBlock(l, config) for l in range(self.layer_num)])
+
 
         freqs_cos, freqs_sin = relative_positional_embedding(seq_length=config.max_length,
                                                              dim=config.hidden_size//config.num_heads)
@@ -169,7 +217,39 @@ class miniModel(torch.nn.Module):
         self.register_buffer("freqs_cos", freqs_cos, persistent=False)
         self.register_buffer("freqs_sin", freqs_sin, persistent=False)
 
-    def forward(self, inputs):
+    def forward(self, 
+                inputs, 
+                past_key_values=None,
+                use_cache=False,
+                attention_mask=None
+                ):
+
+        batch_size, seq_length = inputs.shape
+        past_key_values = past_key_values or [None] * self.layer_num
+
+        start_pos = past_key_values[0][0].shape[1] if past_key_values[0] is not None else 0
+
+        position_embeddings = (self.freqs_cos[start_pos: start_pos+seq_length],
+                           self.freqs_sin[start_pos: start_pos+seq_length])
+
+        hidden_states = self.Embedding(inputs)
+
+        presents = []
+        for layer_idx, (layer, past_key_values) in enumerate(zip(self.miniBlocks, past_key_values)):
+            output, present = layer(hidden_states, position_embeddings, past_key_values, use_cache, attention_mask)
+            presents.append(present)
+
+        hidden_states = self.layer_norm(hidden_states)
+
+        return hidden_states
+
+
+
+
+
+
+
+
 
 
 class miniModelForCausalLM(PretrainedModel, GenerationMixin):
