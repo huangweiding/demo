@@ -1,6 +1,7 @@
 import torch
 from typing import List
-from transformers import PretrainedConfig, PretrainedModel, GenerationMixin
+from transformers import PreTrainedModel, GenerationMixin, PretrainedConfig
+from transformers.modeling_outputs import CausalLMOutputWithPast
 
 THETA = 10000
 
@@ -14,7 +15,8 @@ class MiniConfig(PretrainedConfig):
                  max_length: int=2048,
                  eps: float=1e-6,
                  hidden_size: int=2048,
-                 layer_num: int=8,
+                 layer_num: int=28,
+                 intermediate_size: int=4096,
                  **kwargs):
         super().__init__(**kwargs)
         self.vocab_size = vocab_size
@@ -25,6 +27,7 @@ class MiniConfig(PretrainedConfig):
         self.eps = eps
         self.hidden_size = hidden_size
         self.layer_num = layer_num
+        self.intermediate_size = intermediate_size
 
 
 
@@ -43,9 +46,11 @@ def relative_positional_embedding(seq_length: int, dim: int):
 
 def apply_rotary_positional_embedding(q, k, cos, sin, unsqueeze_dim=1):
     def rotate_half(x):
-        return torch.cat([-x[..., :x.size(-1)//2], x[..., x.size(-1)//2:]])
-    q_embed = q*cos.unsqueeze(unsqueeze_dim) + rotate_half(q)*sin.unsqueeze(unsqueeze_dim)
-    k_embed = k*cos.unsqueeze(unsqueeze_dim) + rotate_half(k)*sin.unsqueeze(unsqueeze_dim)
+        return torch.cat([-x[..., x.size(-1)//2:], x[..., :x.size(-1)//2]], dim=-1)
+    cos = cos.unsqueeze(unsqueeze_dim)
+    sin = sin.unsqueeze(unsqueeze_dim)
+    q_embed = (q*cos) + (rotate_half(q)*sin)
+    k_embed = (k*cos) + (rotate_half(k)*sin)
     return q_embed, k_embed
 
 
@@ -106,20 +111,24 @@ class Attention(torch.nn.Module):
 
     def forward(self, 
                 inputs, 
-                position_embedding, 
+                position_embeddings, 
                 past_key_values=None, 
                 use_cache=False,
                 attention_mask=None):
 
-        cos, sin = position_embedding
+        cos, sin = position_embeddings
         batch_size, seq_length, hidden_size = inputs.size()
 
 
-        q = self.Q(inputs).view(batch_size, seq_length, self.num_heads, self.hidden_size//self.num_heads).transpose(2, 3)
-        k = self.K(inputs).view(batch_size, seq_length, self.num_heads, self.hidden_size//self.num_heads).transpose(2, 3)
-        v = self.V(inputs).view(batch_size, seq_length, self.num_heads, self.hidden_size//self.num_heads).transpose(2, 3)
+        q = self.Q(inputs).view(batch_size, seq_length, self.num_heads, self.hidden_size//self.num_heads)
+        k = self.K(inputs).view(batch_size, seq_length, self.num_heads, self.hidden_size//self.num_heads)
+        v = self.V(inputs).view(batch_size, seq_length, self.num_heads, self.hidden_size//self.num_heads)
 
         q, k = apply_rotary_positional_embedding(q, k, cos[:seq_length], sin[:seq_length])
+
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
 
         if past_key_values is not None:
             k = torch.cat([past_key_values[0], k], dim=1)
@@ -127,19 +136,26 @@ class Attention(torch.nn.Module):
         past_kv = (k, v) if use_cache else None
 
 
-        attention_weights = torch.matmul(q, k)
+        # q [batch_size, num_heads, head_num, seq_length]
+        # k [batch_size, num_heads, head_num, seq_length]
+        # attention_weights [batch_size, num_heads, seq_length, seq_length]
+        attention_weights = torch.matmul(q, k.transpose(-1, -2)) / (self.hidden_size // self.num_heads) ** 0.5
 
         if attention_mask is None:
             # if attention_mask is None, we use causal_attention
-            attention_mask = torch.triu(torch.ones(seq_length, seq_length), diagonal=1).bool()
+            # attention_mask [seq_length, seq_length] bool
+            attention_mask = torch.triu(torch.ones(seq_length, seq_length, device=inputs.device), diagonal=1).bool()
+            # attention_mask [batch_size, 1, seq_length, seq_length]
+            attention_mask = attention_mask.unsqueeze(0).unsqueeze(0)
+
 
         attention_weights = attention_weights.masked_fill(attention_mask, -1e9)
 
-        attention_weights = torch.nn.functional.softmax(attention_weights)
+        attention_weights = torch.nn.functional.softmax(attention_weights, dim=-1)
 
         output = torch.matmul(attention_weights, v)
 
-        output = output.transpose(2, 3).view(batch_size, seq_length, -1)
+        output = output.transpose(2, 3).contiguous().view(batch_size, seq_length, -1)
 
         output = self.O(output)
         output = self.dropout(output)
@@ -148,13 +164,14 @@ class Attention(torch.nn.Module):
 
 class feedForwardBlock(torch.nn.Module):
     def __init__(self, config: MiniConfig):
+        super().__init__()
         self.hidden_size = config.hidden_size
         if config.intermediate_size is None:
             intermediate_size = int(config.hidden_size * 8 / 3)
             config.intermediate_size = 64*((intermediate_size+64-1)//64)
         self.up_proj = torch.nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
         self.gate_proj = torch.nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
-        self.down_proj = torch.nn.Linear(config.intermedaite_size, config.hidden_size, bias=False)
+        self.down_proj = torch.nn.Linear(config.intermediate_size, config.hidden_size, bias=False)
         self.dropout = torch.nn.Dropout(config.dropout_rate)
         self.act_fn = torch.nn.functional.silu
 
@@ -164,6 +181,7 @@ class feedForwardBlock(torch.nn.Module):
 
 class MiniBlock(torch.nn.Module):
     def __init__(self, layer_id: int, config: MiniConfig):
+        super().__init__()
         self.num_heads = config.num_heads
         self.hidden_size = config.hidden_size
         self.attn = Attention(config)
@@ -176,7 +194,7 @@ class MiniBlock(torch.nn.Module):
 
     def forward(self,
                 inputs,
-                position_embedding,
+                position_embeddings,
                 past_key_values=None,
                 attention_mask=None,
                 use_cache=False):
@@ -186,11 +204,11 @@ class MiniBlock(torch.nn.Module):
         residual = inputs
         inputs = self.input_layernorm(inputs)
 
-        output, past_kv = self.attn(inputs,
-                                    position_embedding,
-                                    past_key_values, 
-                                    use_cache,
-                                    attention_mask=attention_mask)
+        output, past_kv = self.attn(inputs=inputs,
+                                    position_embeddings=position_embeddings,
+                                    past_key_values=past_key_values, 
+                                    attention_mask=attention_mask,
+                                    use_cache=use_cache)
 
         hidden_states = residual + output
         hidden_states = hidden_states + self.mlp(self.post_layernorm(hidden_states))
@@ -232,38 +250,106 @@ class miniModel(torch.nn.Module):
         position_embeddings = (self.freqs_cos[start_pos: start_pos+seq_length],
                            self.freqs_sin[start_pos: start_pos+seq_length])
 
-        hidden_states = self.Embedding(inputs)
+        hidden_states = self.embedding_layer(inputs)
 
         presents = []
+        """
+        def forward(self,
+                inputs,
+                position_embedding,
+                past_key_values=None,
+                attention_mask=None,
+                use_cache=False):
+        # inputs dim
+        # [batch_size, seq_length, hidden_size]
+        #
+        residual = inputs
+        inputs = self.input_layernorm(inputs)
+        """
         for layer_idx, (layer, past_key_values) in enumerate(zip(self.miniBlocks, past_key_values)):
-            output, present = layer(hidden_states, position_embeddings, past_key_values, use_cache, attention_mask)
+            hidden_states, present = layer(inputs=hidden_states, position_embeddings=position_embeddings, past_key_values=past_key_values, use_cache=use_cache, attention_mask=attention_mask)
             presents.append(present)
 
         hidden_states = self.layer_norm(hidden_states)
 
-        return hidden_states
+        return hidden_states, presents
 
 
 
 
-
-
-
-
-
-
-class miniModelForCausalLM(PretrainedModel, GenerationMixin):
+class miniModelForCausalLM(PreTrainedModel, GenerationMixin):
     def __init__(self, config: MiniConfig):
+        super().__init__(config)
         self.config = config
         self.model = miniModel(config)
+        self.OUT = CausalLMOutputWithPast()
+        self.lm_head = torch.nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
-    def forward(self, inputs, attention_mask=None):
-        pass
+    def forward(self, 
+                inputs, 
+                past_key_values=None, 
+                use_cache=False, 
+                attention_mask=None):
+
+        hidden_states, presents = self.model(inputs, past_key_values, use_cache, attention_mask)
+
+        logits = self.lm_head(hidden_states)
+        self.OUT.__setitem__("last_hidden_state", hidden_states)    
+        self.OUT.__setitem__("past_key_values", presents)
+        self.OUT.__setitem__("logits", logits)
+
+
+
+        return self.OUT
+
+
 
 if __name__ == "__main__":
-    seq_length = 2000
-    dim = 256
-    relative_positional_embedding(seq_length, dim)
+    import argparse
+    """
+    self.vocab_size = vocab_size
+    self.embedding_size = embedding_size
+    self.dropout_rate = dropout_rate
+    self.num_heads = num_heads
+    self.max_length = max_length
+    self.eps = eps
+    self.hidden_size = hidden_size
+    self.layer_num = layer_num
+    self.intermediate_size = intermediate_size
+    """
+    parser = argparse.ArgumentParser(description="MiniModel Configuration")
+    parser.add_argument("--vocab_size", type=int, default=32000)
+    parser.add_argument("--embedding_size", type=int, default=2048)
+    parser.add_argument("--dropout_rate", type=float, default=0.1)
+    parser.add_argument("--num_heads", type=int, default=8)
+    parser.add_argument("--max_length", type=int, default=2048)
+    parser.add_argument("--eps", type=float, default=1e-6)
+    parser.add_argument("--hidden_size", type=int, default=2048)
+    parser.add_argument("--layer_num", type=int, default=28)
+    parser.add_argument("--intermediate_size", type=int, default=4096)
+
+    args = parser.parse_args()
+
+    config = MiniConfig(
+        vocab_size=args.vocab_size,
+        embedding_size=args.embedding_size,
+        dropout_rate=args.dropout_rate,
+        num_heads=args.num_heads,
+        max_length=args.max_length,
+        eps=args.eps,
+        hidden_size=args.hidden_size,
+        layer_num=args.layer_num,
+        intermediate_size=args.intermediate_size
+    )
+
+    mini_model = miniModelForCausalLM(config)
+    print(f"Model created successfully with {sum(p.numel() for p in mini_model.parameters())} parameters")
+
+    pesudo_input = torch.randint(0, config.vocab_size, (1, 10))
+    print(pesudo_input)
+    output = mini_model(pesudo_input)
+    print(output)
+
 
 
 
