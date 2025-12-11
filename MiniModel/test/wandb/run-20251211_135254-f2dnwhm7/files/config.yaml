@@ -1,0 +1,42 @@
+_wandb:
+    value:
+        cli_version: 0.22.2
+        e:
+            ylcx0hj76cjtnrjoyn4m0unpbgwoxh3q:
+                codePath: MiniModel/test/wandb_test.py
+                codePathLocal: wandb_test.py
+                cpu_count: 4
+                cpu_count_logical: 8
+                disk:
+                    /:
+                        total: "393704071168"
+                        used: "361253691392"
+                email: huangweiding960202@gmail.com
+                executable: /home/weidingh/anaconda3/envs/py310/bin/python
+                git:
+                    commit: 81bdbabed20d378fe15f4ef0c167a8ef7d465050
+                    remote: git@github.com:huangweiding/demo.git
+                host: LPT009629
+                memory:
+                    total: "33524142080"
+                os: Linux-6.8.0-87-generic-x86_64-with-glibc2.35
+                program: /repos/tmp/demo/MiniModel/test/wandb_test.py
+                python: CPython 3.10.15
+                root: /repos/tmp/demo/MiniModel/test
+                startedAt: "2025-12-11T05:52:54.561181Z"
+                writerId: ylcx0hj76cjtnrjoyn4m0unpbgwoxh3q
+        m: []
+        python_version: 3.10.15
+        t:
+            "1":
+                - 105
+            "2":
+                - 105
+            "3":
+                - 19
+            "4": 3.10.15
+            "5": 0.22.2
+            "12": 0.22.2
+            "13": linux-x86_64
+learning_rate:
+    value: 0.01

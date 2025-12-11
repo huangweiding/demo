@@ -1,0 +1,13 @@
+{"time":"2025-12-11T13:52:54.8099333+08:00","level":"INFO","msg":"stream: starting","core version":"0.22.2"}
+{"time":"2025-12-11T13:52:55.285256109+08:00","level":"INFO","msg":"stream: created new stream","id":"f2dnwhm7"}
+{"time":"2025-12-11T13:52:55.285319557+08:00","level":"INFO","msg":"handler: started","stream_id":"f2dnwhm7"}
+{"time":"2025-12-11T13:52:55.285434757+08:00","level":"INFO","msg":"stream: started","id":"f2dnwhm7"}
+{"time":"2025-12-11T13:52:55.28546276+08:00","level":"INFO","msg":"writer: started","stream_id":"f2dnwhm7"}
+{"time":"2025-12-11T13:52:55.285469756+08:00","level":"INFO","msg":"sender: started","stream_id":"f2dnwhm7"}
+{"time":"2025-12-11T13:52:56.347095367+08:00","level":"INFO","msg":"flowcontrol: backed up, offloading to disk","recordNumber":38}
+{"time":"2025-12-11T13:52:56.347396216+08:00","level":"INFO","msg":"stream: closing","id":"f2dnwhm7"}
+{"time":"2025-12-11T13:52:56.681925023+08:00","level":"INFO","msg":"flowcontrol: unblocked","totalOffloaded":3}
+{"time":"2025-12-11T13:52:57.800512403+08:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-12-11T13:52:58.216808357+08:00","level":"INFO","msg":"handler: closed","stream_id":"f2dnwhm7"}
+{"time":"2025-12-11T13:52:58.216860188+08:00","level":"INFO","msg":"sender: closed","stream_id":"f2dnwhm7"}
+{"time":"2025-12-11T13:52:58.216871617+08:00","level":"INFO","msg":"stream: closed","id":"f2dnwhm7"}

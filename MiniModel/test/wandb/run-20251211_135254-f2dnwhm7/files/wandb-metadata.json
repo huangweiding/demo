@@ -1,0 +1,28 @@
+{
+  "os": "Linux-6.8.0-87-generic-x86_64-with-glibc2.35",
+  "python": "CPython 3.10.15",
+  "startedAt": "2025-12-11T05:52:54.561181Z",
+  "program": "/repos/tmp/demo/MiniModel/test/wandb_test.py",
+  "codePath": "MiniModel/test/wandb_test.py",
+  "codePathLocal": "wandb_test.py",
+  "git": {
+    "remote": "git@github.com:huangweiding/demo.git",
+    "commit": "81bdbabed20d378fe15f4ef0c167a8ef7d465050"
+  },
+  "email": "huangweiding960202@gmail.com",
+  "root": "/repos/tmp/demo/MiniModel/test",
+  "host": "LPT009629",
+  "executable": "/home/weidingh/anaconda3/envs/py310/bin/python",
+  "cpu_count": 4,
+  "cpu_count_logical": 8,
+  "disk": {
+    "/": {
+      "total": "393704071168",
+      "used": "361253691392"
+    }
+  },
+  "memory": {
+    "total": "33524142080"
+  },
+  "writerId": "ylcx0hj76cjtnrjoyn4m0unpbgwoxh3q"
+}
