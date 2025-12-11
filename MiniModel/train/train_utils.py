@@ -41,6 +41,7 @@ class PretrainDataset(Dataset):
         mask = input_ids != self.tokenizer.pad_token_id
         X = input_ids[:-1]
         y = input_ids[1:]
+        mask = mask[1:]
         return X, y, mask
     
 
