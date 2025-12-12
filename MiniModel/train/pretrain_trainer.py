@@ -3,7 +3,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import torch
 from models.miniModel import miniModelForCausalLM, MiniConfig
-from train.train_utils import init_model, PretrainDataset
+from train.train_utils import init_model, PretrainDataset, init_distributed_mode, setup_seed
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel
@@ -46,6 +46,14 @@ if __name__ == "__main__":
     parser.add_argument("--num_epochs", type=int, default=1)
     args = parser.parse_args()
 
+    local_rank = init_distributed_mode()
+    if dist.is_initialized():
+        print(f"Rank {dist.get_rank()}: Using device {args.device}")
+        args.device = f"cuda:{local_rank}"
+    setup_seed(42+ local_rank if dist.is_initialized() else 0)
+
+
+
     config = MiniConfig(
         vocab_size=args.vocab_size,
         embedding_size=args.embedding_size,
@@ -61,15 +69,24 @@ if __name__ == "__main__":
     model, tokenizer = init_model(config, tokenizer_path="/repos/tmp/minimind_periphrals/model_weight", weight_path=None, device="cpu")
 
     dataset = PretrainDataset(data_path="/repos/tmp/demo/MiniModel/data/test_data.jsonl", tokenizer=tokenizer)
-    sampler = DistributedSampler(dataset, num_replicas=dist.get_world_size(), rank=dist.get_rank()) if dist.is_initialized() else None
+    train_sampler = DistributedSampler(dataset, num_replicas=dist.get_world_size(), rank=dist.get_rank()) if dist.is_initialized() else None
 
     if dist.is_initialized():
         model = DistributedDataParallel(model, device_ids=[dist.get_rank()])
     
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
+
+    start_epoch, start_step = 0, 0
+
     
-    dataloader = DataLoader(dataset, batch_size=2, sampler=sampler, num_workers=0)
-    train_epoch(dataloader, len(dataloader), start_step=0, wandb=None)
+    for epoch in range(start_epoch, args.num_epochs):
+        train_sampler and train_sampler.set_epoch(epoch)
+        if epoch == start_epoch and start_step > 0:
+            dataloader = DataLoader(dataset, batch_size=args.batch_size, sampler=train_sampler, num_workers=0)
+            train_epoch(dataloader, len(dataloader), start_step=0, wandb=None)
+        else:
+            dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=train_sampler is None, sampler=train_sampler, num_workers=0)
+            train_epoch(dataloader, len(dataloader), start_step=0, wandb=None)
 
 
 
