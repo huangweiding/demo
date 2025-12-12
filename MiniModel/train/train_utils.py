@@ -39,12 +39,26 @@ def init_model(config: MiniConfig, tokenizer_path: str, weight_path: str=None, d
     return model.to(device), tokenizer
 
 class SkipBatchSampler(Sampler):
-    def __init__(self, sampler , batch_size: int, skip_steps: int):
+    def __init__(self, sampler , batch_size: int, skipped_batches: int):
         self.sampler = sampler
-        self.skip_steps = skip_steps
-        self.current_step = 0
+        self.batch_size = batch_size
+        self.skipped_batches = skipped_batches
 
     def __iter__(self):
+        batches = []
+        steps = 0
+        for batch in self.sampler:
+            batches.append(batch)
+            if len(batches) == self.batch_size:
+                if steps <= self.skipped_batches:
+                    steps += 1
+                    batches = []
+                    continue
+                yield batches
+        if len(batches) > 0 and steps > self.skipped_batches:
+            yield batches
+
+
     
     def __len__(self):
         return len(self.sampler)
